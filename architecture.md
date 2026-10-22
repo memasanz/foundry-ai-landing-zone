@@ -78,84 +78,99 @@ not automatic routing of every Foundry-internal call.
 
 ## 2. How traffic crosses the enterprise network
 
-Follow one agent from subscription 3. Its local MCP tool shares its VNet, but
-the API request still goes through the shared APIM. This view uses the
-**hub-firewall routing option**, reflecting the Visio's hub and UDR labels,
-rather than the previous direct-spoke-peering example.
+**These are two different API calls, not branches of one request.** Follow each
+row from left to right. The examples use hub-firewall routing, reflecting the
+Visio's hub and UDR labels.
 
-**Solid green lines = private traffic. Dashed orange line = public HTTPS.**
-Responses return over the same connections and are omitted.
+Each row repeats the same physical firewall to show its two traversal points
+without crossing lines. Both rows use the **same single APIM instance**.
+Green arrows are private traffic; responses follow the connections back and
+are omitted.
+
+### C1: a model call
 
 ```mermaid
 flowchart LR
-    subgraph Sub3["Subscription 3 / Same VNet"]
-        Agent["FOUNDRY AGENT"]
-        Model["MODEL DEPLOYMENT<br/>Foundry model API"]
-        Local["LOCAL PRIVATE MCP<br/>Same VNet / separate tool subnet"]
-    end
-    subgraph Connectivity["Platform connectivity subscription / Hub VNet"]
-        Hub["NETWORK HUB<br/>Azure Firewall"]
-    end
-    subgraph Gateway["Gateway subscription / Gateway spoke"]
-        APIM["SHARED APIM<br/>API policies and routing"]
-    end
-    Private["PRIVATE MCP<br/>Tools subscription 6"]
-    Remote["PRIVATE MCP<br/>On-premises / another cloud"]
-    Learn["PUBLIC MCP<br/>Microsoft Learn"]
+    Agent["AGENT<br/>Subscription 3"]
+    FW1["HUB FIREWALL<br/>First pass"]
+    APIM["SHARED APIM<br/>Model API"]
+    FW2["SAME HUB FIREWALL<br/>Second pass"]
+    Model["MODEL<br/>Subscription 3"]
 
-    Agent -->|"Model OR tool request"| Hub
-    Hub -->|"Forward to APIM"| APIM
-    APIM -->|"Separate connection<br/>to the selected backend"| Hub
-    Hub -->|"Model API"| Model
-    Hub -->|"Local tool API"| Local
-    Hub -->|"Shared tool API"| Private
-    Hub -->|"Remote tool API<br/>VPN / private connectivity"| Remote
-    Hub -.->|"Public tool API<br/>Allowed outbound HTTPS"| Learn
+    Agent -->|"C1: model request"| FW1
+    FW1 -->|"C1: to APIM"| APIM
+    APIM -->|"C1: forward to model"| FW2
+    FW2 -->|"C1: to model"| Model
+
+    classDef gateway fill:#F3E8FF,stroke:#7E22CE,stroke-width:3px,color:#3B0764
+    classDef foundry fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#172554
+    classDef network fill:#CCFBF1,stroke:#0F766E,stroke-width:2px,color:#134E4A
+
+    class APIM gateway
+    class Agent,Model foundry
+    class FW1,FW2 network
+    linkStyle default stroke:#15803D,stroke-width:3px
+```
+
+All four arrows belong to **C1**, the same logical model call. APIM opens a
+backend connection to forward it. No MCP tool is executed by this request.
+The model may return a request for the agent runtime to execute a tool.
+
+### C2: a separate local-tool call
+
+```mermaid
+flowchart LR
+    Agent["AGENT<br/>Subscription 3"]
+    FW1["HUB FIREWALL<br/>First pass"]
+    APIM["SAME SHARED APIM<br/>Local MCP API"]
+    FW2["SAME HUB FIREWALL<br/>Second pass"]
+    Local["LOCAL MCP TOOL<br/>Subscription 3 / Agent's VNet"]
+
+    Agent -->|"C2: tool request"| FW1
+    FW1 -->|"C2: to APIM"| APIM
+    APIM -->|"C2: forward to tool"| FW2
+    FW2 -->|"C2: back to agent's VNet"| Local
 
     classDef gateway fill:#F3E8FF,stroke:#7E22CE,stroke-width:3px,color:#3B0764
     classDef foundry fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#172554
     classDef privateTool fill:#DCFCE7,stroke:#15803D,stroke-width:2px,color:#14532D
-    classDef publicTool fill:#FFEDD5,stroke:#C2410C,stroke-width:2px,color:#7C2D12
+    classDef network fill:#CCFBF1,stroke:#0F766E,stroke-width:2px,color:#134E4A
 
     class APIM gateway
-    class Agent,Model foundry
-    class Private,Remote,Local privateTool
-    class Learn publicTool
-    classDef network fill:#CCFBF1,stroke:#0F766E,stroke-width:3px,color:#134E4A
-    class Hub network
-    style Sub3 fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#172554
-    style Connectivity fill:#F0FDFA,stroke:#0F766E,stroke-width:2px,color:#134E4A
-    style Gateway fill:#FAF5FF,stroke:#7E22CE,stroke-width:2px,color:#3B0764
-    linkStyle 0,1,2,3,4,5,6 stroke:#15803D,stroke-width:3px
-    linkStyle 7 stroke:#C2410C,stroke-width:3px
+    class Agent foundry
+    class Local privateTool
+    class FW1,FW2 network
+    linkStyle default stroke:#15803D,stroke-width:3px
 ```
 
-Read the local-tool path as:
+All four arrows belong to **C2**, a new call made by the agent runtime.
+The agent and local tool share subscription 3 and its VNet, but this request
+goes out through APIM and back. There is no direct agent-to-tool call shown.
 
-**Agent in subscription 3 -> hub firewall -> APIM -> hub firewall -> local
-MCP tool in subscription 3.**
+Other tools use their own separate calls:
 
-The hub appears once but is traversed twice: first on the agent's connection to
-APIM, then on APIM's separate connection to the tool. **The firewall controls
-network traffic; APIM controls API access and policies. Neither replaces the
-other.** Each model request or tool invocation is a separate API request to
-APIM. The outgoing lines show available destinations, not steps in a single
-request. APIM selects the configured backend for that API; it does not turn a
-model request into a tool call.
+| Destination | APIM's backend route in this design |
+|---|---|
+| Shared private MCP in subscription 6 | Hub firewall to the shared tools spoke |
+| Private MCP on-premises or in another cloud | Hub firewall and configured private connectivity |
+| Public Microsoft Learn MCP | Hub firewall to the public endpoint over allowed outbound HTTPS |
 
-All workload spokes peer with the hub. Routes and firewall rules explicitly
-enable traffic between them; peering alone is not transitive. DNS is supplied
-centrally, as in the Visio. The other four Foundry spokes use the same pattern
-and are omitted from this traffic view to keep it readable.
-
-For Microsoft Learn, only the final outbound leg uses a public endpoint.
-The APIM gateway remains privately accessible.
+The firewall controls network traffic; APIM controls API access and policies.
+Workload spokes peer with the hub, with explicit routes and firewall rules:
+peering alone is not transitive. Central DNS, the other four Foundry spokes,
+and subscription boundaries around APIM/firewall are omitted from these
+single-call views to keep them readable.
 
 ## 3. Model calls and tool calls are separate requests
 
 This example shows one possible agent workflow: ask a model, execute two tools,
 then ask the model to produce an answer using the results. Not every question
 requires tools, and each invocation of a tool is a separate request.
+
+**Read from top to bottom. C1 -> C2 -> C3 -> C4 is the execution order in
+this example.** A repeated ID means another hop or response within the same
+logical call; a new ID means a separate call. Tools can also run in parallel
+when supported, but this example deliberately shows sequential execution.
 
 **This is the target flow for agent code that supports APIM-configured model
 and tool endpoints.** It does not imply that Foundry-managed internal model
@@ -171,35 +186,35 @@ sequenceDiagram
     participant Learn as Microsoft Learn MCP
 
     rect rgb(219, 234, 254)
-        Note over Agent,Learn: REQUEST 1 - Ask the model what to do
-        Agent->>APIM: Model API: question + available tool definitions
-        APIM->>Model: Forward model request
-        Model-->>APIM: Request local tool and Learn tool calls
-        APIM-->>Agent: Return model's tool-call requests
+        Note over Agent,Learn: C1 - MODEL CALL: ask what to do
+        Agent->>APIM: C1: question + available tool definitions
+        APIM->>Model: C1: forward model request
+        Model-->>APIM: C1 result: request local and Learn tool calls
+        APIM-->>Agent: C1 result: return tool-call requests
     end
 
     rect rgb(220, 252, 231)
-        Note over Agent,Learn: REQUEST 2 - Execute the local tool
-        Agent->>APIM: Local MCP API: tool name + arguments
-        APIM->>Local: Execute tool in the agent's own VNet
-        Local-->>APIM: Tool result
-        APIM-->>Agent: Return local tool result
+        Note over Agent,Learn: C2 - NEW TOOL CALL: execute local MCP
+        Agent->>APIM: C2: local tool name + arguments
+        APIM->>Local: C2: execute tool in the agent's own VNet
+        Local-->>APIM: C2 result: tool output
+        APIM-->>Agent: C2 result: return local tool output
     end
 
     rect rgb(255, 237, 213)
-        Note over Agent,Learn: REQUEST 3 - Execute the public tool
-        Agent->>APIM: Learn MCP API: tool name + arguments
-        APIM->>Learn: Execute tool over public HTTPS
-        Learn-->>APIM: Documentation result
-        APIM-->>Agent: Return Learn tool result
+        Note over Agent,Learn: C3 - NEW TOOL CALL: execute Microsoft Learn MCP
+        Agent->>APIM: C3: Learn tool name + arguments
+        APIM->>Learn: C3: execute tool over public HTTPS
+        Learn-->>APIM: C3 result: documentation
+        APIM-->>Agent: C3 result: return documentation
     end
 
     rect rgb(219, 234, 254)
-        Note over Agent,Learn: REQUEST 4 - Ask the model to write the answer
-        Agent->>APIM: Model API: conversation + both tool results
-        APIM->>Model: Forward model request
-        Model-->>APIM: Final answer
-        APIM-->>Agent: Return final answer
+        Note over Agent,Learn: C4 - NEW MODEL CALL: write the answer using tool results
+        Agent->>APIM: C4: conversation + C2 and C3 tool results
+        APIM->>Model: C4: forward model request
+        Model-->>APIM: C4 result: final answer
+        APIM-->>Agent: C4 result: return final answer
     end
 ```
 
