@@ -3,6 +3,10 @@
 **One shared APIM gateway, five Foundry subscriptions, and a shared tools
 subscription.** Agents access private and public tools through the same gateway.
 
+An existing **platform connectivity subscription** provides the network hub,
+firewall, DNS, and connections to remote networks. It is separate from the
+seven AI subscriptions above.
+
 These diagrams show the target architecture, not a validated deployment.
 
 ## Color key
@@ -13,12 +17,15 @@ These diagrams show the target architecture, not a validated deployment.
 | Blue | Foundry instances and agents |
 | Green | Private MCP tools |
 | Orange | Public MCP tools, such as Microsoft Learn |
+| Teal | Shared enterprise network hub and firewall |
 | Gray | Applications |
 
 ## 1. Where everything lives
 
-Each box names its subscription. The green tools box is a separate, sixth
-workload subscription; APIM has its own subscription.
+The subscription 3 group contains both Foundry and a local MCP tool in the same
+VNet. Shared private tools live in subscription 6; APIM has its own subscription.
+This is the **logical API view**: network and firewall hops are intentionally
+omitted here and shown in diagram 2.
 
 ```mermaid
 flowchart TB
@@ -27,7 +34,10 @@ flowchart TB
 
     F1["Foundry 1<br/>Subscription 1"]
     F2["Foundry 2<br/>Subscription 2"]
-    F3["Foundry 3<br/>Subscription 3"]
+    subgraph Sub3["Subscription 3 / Foundry VNet"]
+        F3["Foundry 3"]
+        Local["Local private MCP tool"]
+    end
     F4["Foundry 4<br/>Subscription 4"]
     F5["Foundry 5<br/>Subscription 5"]
 
@@ -43,6 +53,7 @@ flowchart TB
     APIM <--> F5
     APIM --> Private
     APIM --> Remote
+    APIM --> Local
     APIM -.->|"Public HTTPS"| Learn
 
     classDef gateway fill:#F3E8FF,stroke:#7E22CE,stroke-width:3px,color:#3B0764
@@ -53,37 +64,51 @@ flowchart TB
 
     class APIM gateway
     class F1,F2,F3,F4,F5 foundry
-    class Private,Remote privateTool
+    class Private,Remote,Local privateTool
     class Learn publicTool
     class Apps client
     linkStyle default stroke:#64748B,stroke-width:2px
-    linkStyle 8 stroke:#C2410C,stroke-width:3px
+    style Sub3 fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#172554
+    linkStyle 9 stroke:#C2410C,stroke-width:3px
 ```
 
 **Read it as:** applications call APIM to reach agents; agents call that same
 APIM to reach tools or supported model APIs. The arrows show API relationships,
 not automatic routing of every Foundry-internal call.
 
-## 2. How an agent reaches tools
+## 2. How traffic crosses the enterprise network
 
-Follow one agent from subscription 3. All five Foundry environments use the
-same pattern.
+Follow one agent from subscription 3. Its local MCP tool shares its VNet, but
+the API request still goes through the shared APIM. This view uses the
+**hub-firewall routing option**, reflecting the Visio's hub and UDR labels,
+rather than the previous direct-spoke-peering example.
 
 **Solid green lines = private traffic. Dashed orange line = public HTTPS.**
 Responses return over the same connections and are omitted.
 
 ```mermaid
 flowchart LR
-    Agent["AGENT<br/>Foundry subscription 3"]
-    APIM["SHARED APIM<br/>Gateway subscription"]
+    subgraph Sub3["Subscription 3 / Same VNet"]
+        Agent["FOUNDRY AGENT"]
+        Local["LOCAL PRIVATE MCP<br/>Same VNet / separate tool subnet"]
+    end
+    subgraph Connectivity["Platform connectivity subscription / Hub VNet"]
+        Hub["NETWORK HUB<br/>Azure Firewall"]
+    end
+    subgraph Gateway["Gateway subscription / Gateway spoke"]
+        APIM["SHARED APIM<br/>API policies and routing"]
+    end
     Private["PRIVATE MCP<br/>Tools subscription 6"]
     Remote["PRIVATE MCP<br/>On-premises / another cloud"]
     Learn["PUBLIC MCP<br/>Microsoft Learn"]
 
-    Agent -->|"1. Private HTTPS<br/>VNet peering"| APIM
-    APIM -->|"2a. Private HTTPS<br/>VNet peering"| Private
-    APIM -->|"2b. Private HTTPS<br/>VPN / private connectivity"| Remote
-    APIM -.->|"2c. Public HTTPS<br/>Allowed outbound access"| Learn
+    Agent -->|"1. Request to APIM"| Hub
+    Hub -->|"1. Forward request"| APIM
+    APIM -->|"2. New backend connection"| Hub
+    Hub -->|"2a. Back to the same VNet"| Local
+    Hub -->|"2b. To shared tools VNet"| Private
+    Hub -->|"2c. Via VPN / private connectivity"| Remote
+    Hub -.->|"2d. Allowed outbound HTTPS"| Learn
 
     classDef gateway fill:#F3E8FF,stroke:#7E22CE,stroke-width:3px,color:#3B0764
     classDef foundry fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#172554
@@ -92,18 +117,34 @@ flowchart LR
 
     class APIM gateway
     class Agent foundry
-    class Private,Remote privateTool
+    class Private,Remote,Local privateTool
     class Learn publicTool
-    linkStyle 0,1,2 stroke:#15803D,stroke-width:3px
-    linkStyle 3 stroke:#C2410C,stroke-width:3px
+    classDef network fill:#CCFBF1,stroke:#0F766E,stroke-width:3px,color:#134E4A
+    class Hub network
+    style Sub3 fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#172554
+    style Connectivity fill:#F0FDFA,stroke:#0F766E,stroke-width:2px,color:#134E4A
+    style Gateway fill:#FAF5FF,stroke:#7E22CE,stroke-width:2px,color:#3B0764
+    linkStyle 0,1,2,3,4,5 stroke:#15803D,stroke-width:3px
+    linkStyle 6 stroke:#C2410C,stroke-width:3px
 ```
 
-**Step 1:** the agent calls an APIM endpoint. **Step 2:** APIM calls the chosen
-tool backend; 2a, 2b, and 2c are alternatives, not sequential steps.
+Read the local-tool path as:
 
-The agent does not need a direct connection to each tool network. APIM makes
-the backend connection. Microsoft Learn remains a public service even though
-the agent reaches APIM privately.
+**Agent in subscription 3 -> hub firewall -> APIM -> hub firewall -> local
+MCP tool in subscription 3.**
+
+The hub appears once but is traversed twice: first on the agent's connection to
+APIM, then on APIM's separate connection to the tool. **The firewall controls
+network traffic; APIM controls API access and policies. Neither replaces the
+other.** Tool destinations 2a through 2d are alternatives, not sequential steps.
+
+All workload spokes peer with the hub. Routes and firewall rules explicitly
+enable traffic between them; peering alone is not transitive. DNS is supplied
+centrally, as in the Visio. The other four Foundry spokes use the same pattern
+and are omitted from this traffic view to keep it readable.
+
+For Microsoft Learn, only the final outbound leg uses a public endpoint.
+The APIM gateway remains privately accessible.
 
 ## Two deployment options, same diagrams
 
@@ -114,11 +155,18 @@ The purple box is always one APIM instance. Choose one networking configuration:
 | **Premium v2** | Injected gateway private IP | VNet injection |
 | **Standard v2** | Inbound private endpoint; public gateway access disabled after establishing the private endpoint | Outbound VNet integration |
 
+These are **alternatives**, not two APIM instances deployed together. Both
+must be configured to use the selected hub-routing design. For Standard v2,
+the private endpoint handles inbound traffic and the integration subnet handles
+outbound traffic; they are distinct networking components.
+
 ## Details intentionally left out of the diagrams
 
-- **Connectivity:** this example uses direct peering between the gateway VNet
-  and each Foundry/tools VNet. If enterprise policy requires hub-firewall
-  inspection, use explicitly configured hub routing instead.
+- **Connectivity:** diagram 2 selects hub-firewall routing. This requires
+  SKU-supported route configuration, symmetric return paths, and firewall
+  rules, including private-endpoint routing configuration where applicable.
+  Direct peering to the gateway spoke remains a simpler alternative when
+  central inspection is not required, but is not the path shown here.
 - **DNS and access:** private DNS, network rules, backend authorization, and
   client endpoint configuration are still required. Peering alone does not
   force requests through APIM or prevent bypass.
