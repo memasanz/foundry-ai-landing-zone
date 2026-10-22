@@ -222,6 +222,87 @@ must be configured to use the selected hub-routing design. For Standard v2,
 the private endpoint handles inbound traffic and the integration subnet handles
 outbound traffic; they are distinct networking components.
 
+## Template 19: included versus additional work
+
+This inventory covers the upstream template 19 `main.bicep`, its referenced
+modules, and the accompanying examples, reviewed on October 22, 2026. The
+upstream `main` branch can change. **The complete architecture above is an
+extension of template 19, not its default deployment.**
+
+### Included in the core infrastructure deployment
+
+| Component | What template 19 provides |
+|---|---|
+| Foundry account | Creates an AI Services / Foundry account with public network access disabled and local authentication disabled. |
+| Foundry project | Creates a project with a system-assigned managed identity. |
+| Model deployment | Deploys one parameter-selected model with configurable model name, version, SKU, and capacity. |
+| Agent Service setup | Configures account/project capability hosts and connections to the customer-managed dependencies. This is infrastructure setup, not deployment of your agent application. |
+| Customer-owned VNet | Creates a VNet or references an existing VNet. It does not use the Microsoft-managed VNet option. |
+| Three subnets | Agent subnet, private endpoint subnet, and MCP/tool-hosting subnet; includes the required delegations for the template's subnet configuration. |
+| Existing-subnet reuse | Can reference existing subnet resource IDs without modifying those subnets, preserving externally managed route tables, NSGs, and delegations. |
+| Azure Storage | Creates or reuses the storage account used by Agent Service, with related connections and role assignments. |
+| Cosmos DB | Creates or reuses the Agent Service Cosmos DB dependency, with related connections and role assignments. Newly created Cosmos DB is single-region. |
+| Azure AI Search | Creates or reuses the Search service, with related connections and role assignments. |
+| Private endpoints and DNS | Creates private endpoints and associated DNS configuration for its supported dependencies. Existing private DNS zones can be referenced; the README requires you to pre-link referenced zones to the VNet. |
+| Key Vault | Enabled by default; can create a vault or use an existing one for private CA trust, with private endpoint/DNS and Foundry identity access. Certificate onboarding is a separate step. |
+| Azure Container Registry | Enabled by default; creates a Premium registry with a private endpoint and project identity pull permissions. Can be disabled. |
+| Monitoring | Creates Application Insights, Log Analytics, the Foundry telemetry connection, and Azure Monitor Private Link Scope (AMPLS) with private ingestion connectivity. |
+| Supporting identity permissions | Creates the system-assigned identities and resource/data-plane role assignments used by this Foundry setup. These are not your APIM caller/backend authorization policies. |
+
+**Do not interpret "private endpoints included" as "every public endpoint and
+authentication method is disabled."** Individual resources have different
+defaults. For example, the inspected Key Vault module uses public network
+access enabled with firewall default-deny and Azure-services bypass;
+Application Insights public querying remains enabled; AI Search allows Entra
+or API-key authentication. Review the actual resource properties against your
+enterprise policies.
+
+### Provided as separate examples or follow-up steps
+
+These are in the sample folder but are **not automatically deployed by the
+core `main.bicep` deployment**.
+
+| Item | What is available separately |
+|---|---|
+| MCP server hosting | README deployment steps and a Dockerfile example for deploying a server on Container Apps. The core template creates the subnet, not a running MCP server or Container Apps environment. |
+| OpenAPI tool | Example server code and Dockerfile. |
+| Azure Function tool | Example application, OpenAPI description, and separate deployment files. Its documented private-endpoint limitations still apply. |
+| A2A tool/agent server | Example server code and Dockerfile. |
+| Agent tests | Scripts and a testing guide for exercising the environment; not a production agent application or automated acceptance of our APIM design. |
+| Additional projects | Separate `add-project` Bicep entry point and parameter file. |
+| Private certificate trust | Instructions for CA certificate onboarding; the core vault deployment alone does not complete trust setup. |
+
+### Not included: additions needed for our proposed architecture
+
+| Component or behavior | Additional work required |
+|---|---|
+| APIM, either SKU | Deploy the single shared gateway. Neither Premium v2 nor Standard v2 APIM is deployed or connected by template 19. |
+| APIM networking | Configure Premium v2 injection, or Standard v2 private endpoint plus outbound integration and disabled public gateway access. |
+| APIM API configuration | Create agent, model, and MCP APIs, backend definitions, policies, caller authorization, backend credentials/identities, and gateway diagnostics. |
+| Enterprise connectivity hub | Create or reuse the platform hub VNet and connectivity subscription. |
+| Azure Firewall | Create or reuse the firewall and define network/application rules and any required egress allowlists. |
+| Peering and routed traffic | Configure hub/spoke peering, UDRs, route tables, subnet associations, return paths, and private-endpoint routing as needed. Preserving an existing route table does not create or validate its routes. |
+| Custom NSG rules | Supply enterprise NSGs and traffic restrictions; the core VNet/subnet modules do not deploy the firewall/NSG enforcement design shown here. |
+| Enterprise DNS forwarding | Configure DNS Private Resolver or DNS servers, forwarding rules, and cross-VNet name resolution. Private DNS zone creation is not a complete enterprise DNS design. |
+| Remote network access | Configure VPN, ExpressRoute, or other connectivity to on-premises and other-cloud tools. |
+| Developer/client private access | Supply VPN, ExpressRoute, Bastion/jump-host access, or another supported way to reach the private environment. |
+| Five Foundry subscriptions | Provision the subscriptions separately and deploy/configure each Foundry environment. Template 19 is not a multi-subscription landing-zone orchestrator. |
+| Shared tools subscription | Provision the separate tools environment, deploy its MCP servers, and connect it to the gateway network. |
+| Public Microsoft Learn MCP through APIM | Register/configure the public MCP backend, gateway API, and supported outbound controls. |
+| All-through-APIM behavior | Configure supported agent clients to use APIM endpoints and restrict bypass appropriately. The template does not redirect internal model calls or tool calls through APIM. |
+| Production applications | Supply agent code/definitions, app frontends, business-specific tools, knowledge ingestion, and application deployment pipelines. |
+| Wider governance stack | Add API Center, gateway usage ingestion/reporting, and enterprise Defender/Purview/Policy configuration as required. These are not provisioned as the full governance architecture by template 19. |
+| End-to-end verification | Prove the selected APIM SKU, firewall routing, DNS, managed MCP discovery/invocation, and intended model-call behavior together. |
+
+**In short:** template 19 supplies the private Foundry foundation. APIM,
+enterprise firewall networking, and the shared multi-subscription gateway
+behavior are additions.
+
+Inventory sources:
+[main deployment](https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools/main.bicep),
+[modules](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools/modules-network-secured),
+and [README and examples](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools).
+
 ## Details intentionally left out of the diagrams
 
 - **Connectivity:** diagram 2 selects hub-firewall routing. This requires
